@@ -7,9 +7,12 @@ import numpy as np
 import pandas as pd
 import requests
 import psycopg2
-from pyspark.sql import SparkSession
+import urlparse
+from pyspark import SparkConf
+from pyspark import SparkContext
+#from pyspark.sql import SparkSession
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
-from pyspark.sql import Row
+#from pyspark.sql import Row
 
 def getRepoID(repoFullName):
     repoAPIURL = 'https://api.github.com/repos/' + repoFullName
@@ -18,33 +21,37 @@ def getRepoID(repoFullName):
 def checkIfInit(dbCur):
     query = '''SELECT EXISTS(
                 SELECT * FROM information_schema.tables
-                WHERE table_name=\'REPO_METRICS\');'''
+                WHERE table_name=\'repo_metrics\');'''
     dbCur.execute(query)
-    return cur.fetchone()[0]
+    return dbCur.fetchone()[0]
 
-def initDB(dbCur):
-    query = '''CREATE TABLE REPO_METRICS(
+def initTable(dbCur):
+    query = '''CREATE TABLE repo_metrics(
                 ID INT PRIMARY KEY NOT NULL,
                 JSON_METRICS TEXT NOT NULL);'''
     dbCur.execute(query)
 
-def checkIfCached(dbCur,rID):
+def checkIfCached(dbCur, rID):
     query = '''SELECT COUNT(ID)
-                FROM REPO_METRICS
+                FROM repo_metrics
                 WHERE ID=''' + str(rID) + ';'
     dbCur.execute(query)
     return (dbCur.fetchone()[0]==1)
 
-def cacheRecord(dbCur,rID,metrics):
-    query = '''INSERT INTO REPO_METRICS (ID, JSON_METRICS)
+def getCacheRecord(dbCur, rID):
+    query = 'SELECT JSON_METRICS FROM repo_metrics WHERE ID=\''+str(rID)+'\';'
+    dbCur.execute(query)
+    return (dbCur.fetchone()[0])
+
+def putCacheRecord(dbCur, rID, metrics):
+    query = '''INSERT INTO repo_metrics (ID, JSON_METRICS)
                 VALUES(''' + str(rID) + ',\'' + metrics + '\');'
     dbCur.execute(query)
-
 
 def parseGitHubUTCTimeStamp(ts):
     return dt.datetime.strptime(ts, '%Y-%m-%dT%H:%M:SZ')
 
-def determineResolutionTime(opened,closed):
+def determineResolutionTime(opened, closed):
     td = closed - opened
     return abs(td.days)
 
@@ -91,7 +98,7 @@ def determineSentiments(messages, mType):
 
         return sentiments
 
-def computeMetrics(sc,repoID):
+def computeMetrics(sc, repoID):
     eventRecords = sc.textFile(inFiles)\
             .map(lambda record: record['repo']['id'] == rID)\
             .cache()
@@ -154,29 +161,30 @@ def computeMetrics(sc,repoID):
 
     return 'Computed'
 
-spark = SparkSession\
-        .builder\
-        .config("spark.executor.heartbeatInterval","3600s")\
-        .appName("kono")\
-        .getOrCreate()
+def workloop(master, inq, outq, dburl):
+    sconf = SparkConf().setAppName("kono-worker").setMaster(master)
+    sc = SparkContext(conf=sconf)
 
-sc = spark.sparkContext
-repoURL = 'https://github.com/radanalyticsio/oshinko-s2i'
-repoFullName = repoURL.split('github.com/')[-1]
-repoID = getRepoID(repoFullName)
+    if dburl is not None:
+        parsedURL = urlparse.urlparse(dburl)
+        dbUser = parsedURL.username
+        dbPassword = parsedURL.password
+        dbName = parsedURL.path[1:]
+        dbHost = parsedURL.hostname
+        conn = psycopg2.connect(dbname=dbName,user=dbUser,password=dbPassword,host=dbHost)
+        cur = conn.cursor()
 
-conn = psycopg2.connect(dbname=dbName,user=dbUser,password=dbPassword,host=dbHost)
-cur = conn.cursor()
+    outq.put("ready")
 
-if not checkIfInit(cur):
-    initTable(cur)
-    
-cached = checkIfCached(cur, repoID)
+    while True:
+        job = inq.get()
+        repoURL = job["url"]
+        rid = job["_id"]
 
-if(cached):
-    print repoID,' is Cached with values ',metrics
-  
-else:
-    metrics=computeMetrics(sc,repoID)
-    cacheRecord(cur,repoID,metrics)
+        repoFullName = repoURL.split('github.com/')[-1]
+        repoID = getRepoID(repoFullName)
+
+        metrics=computeMetrics(sc, repoID)
+        #putCacheRecord(cur, repoID, metrics)
+        outq.put((rid, job["name"]))
 
