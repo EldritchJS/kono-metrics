@@ -11,17 +11,17 @@ export NSS_WRAPPER_GROUP=/etc/group
 
 export LD_PRELOAD=libnss_wrapper.so
 
-if [ -z $OPH_MONGO_URL ]; then
-    echo "OPH_MONGO_URL not provided"
+if [ -z $KONO_POSTGRES_URL ]; then
+    echo "KONO_POSTGRES_URL not provided"
     exit 1
 fi
 
-if [ -z $OPH_SPARK_MASTER_URL ]; then
-    echo "OPH_SPARK_MASTER_URL not provided"
+if [ -z $KONO_SPARK_MASTER_URL ]; then
+    echo "KONO_SPARK_MASTER_URL not provided"
     exit 1
 fi
 
-export OPH_DBURL=$OPH_MONGO_URL
-export OPH_MASTER=$OPH_SPARK_MASTER_URL
+export OPH_DBURL=$KONO_POSTGRES_URL
+export OPH_MASTER=$KONO_SPARK_MASTER_URL
 
 exec spark-submit --master $OPH_MASTER --py-files worker.py ./app.py
